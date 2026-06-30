@@ -61,17 +61,25 @@ jobs:
           echo "✅ Android SDK setup complete"
 
       # ==========================================
-      # 3. Setup Flutter (VERSI YANG DIBUTUHKAN)
+      # 3. Setup Flutter (Support SDK ^3.8.1)
       # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.4'  # <-- PAKAI INI
+          flutter-version: '3.27.4'  # Compatible dengan SDK ^3.8.1
           channel: 'stable'
           cache: true
 
       # ==========================================
-      # 4. Download project ZIP
+      # 4. Verify Flutter & Dart version
+      # ==========================================
+      - name: Verify Flutter version
+        run: |
+          flutter --version
+          dart --version
+
+      # ==========================================
+      # 5. Download project ZIP
       # ==========================================
       - name: Download project ZIP
         run: |
@@ -84,7 +92,7 @@ jobs:
           echo "✅ Downloaded: $(ls -lh project.zip)"
 
       # ==========================================
-      # 5. Extract project
+      # 6. Extract project
       # ==========================================
       - name: Extract project
         run: |
@@ -104,7 +112,7 @@ jobs:
           ls -la project/
 
       # ==========================================
-      # 6. Validate Flutter project
+      # 7. Validasi Flutter project & SDK
       # ==========================================
       - name: Validate Flutter project
         run: |
@@ -115,9 +123,21 @@ jobs:
             exit 1
           fi
           echo "✅ pubspec.yaml found"
+          
+          echo "📋 SDK version required:"
+          grep -A 2 "environment:" pubspec.yaml || true
 
       # ==========================================
-      # 7. Get Flutter dependencies
+      # 8. Flutter clean
+      # ==========================================
+      - name: Clean project
+        run: |
+          cd project
+          flutter clean
+          echo "✅ Project cleaned"
+
+      # ==========================================
+      # 9. Get Flutter dependencies
       # ==========================================
       - name: Get dependencies
         run: |
@@ -126,12 +146,15 @@ jobs:
           echo "✅ Dependencies installed"
 
       # ==========================================
-      # 8. Build APK
+      # 10. Build APK
       # ==========================================
       - name: Build APK
         id: build
         run: |
           cd project
+          
+          # Tampilkan versi Flutter yang digunakan
+          flutter --version
           
           if [ "${{ inputs.build_type }}" == "release" ]; then
             echo "🚀 Building RELEASE APK..."
@@ -155,25 +178,26 @@ jobs:
             ls -la $APK_PATH
           else
             echo "❌ Build failed - no APK found"
+            ls -la build/app/outputs/apk/ || true
             exit 1
           fi
 
       # ==========================================
-      # 9. Upload APK
+      # 11. Upload APK
       # ==========================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk-${{ inputs.build_type }}
+          name: flutter-apk-${{ inputs.build_type }}-${{ github.run_id }}
           path: project/${{ steps.build.outputs.apk_path }}
           retention-days: 7
           if-no-files-found: error
 
       # ==========================================
-      # 10. Upload to GitHub Release
+      # 12. Upload to GitHub Release
       # ==========================================
       - name: Upload to GitHub Release
-        if: inputs.tag != 'build-manual'
+        if: inputs.tag != 'build-manual' && success()
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ inputs.tag }}
@@ -182,8 +206,26 @@ jobs:
             ## Flutter APK Build
             - **Type:** ${{ inputs.build_type }}
             - **Tag:** ${{ inputs.tag }}
+            - **Flutter Version:** 3.27.4
+            - **Dart SDK:** ^3.8.1
+            - **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           files: project/${{ steps.build.outputs.apk_path }}/*.apk
           draft: false
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ==========================================
+      # 13. Debug jika gagal
+      # ==========================================
+      - name: Debug build failure
+        if: failure()
+        run: |
+          echo "📂 Project structure:"
+          ls -la project/
+          echo "📂 Android folder:"
+          ls -la project/android/ || echo "No android folder"
+          echo "📂 Build outputs:"
+          find project -name "*.apk" 2>/dev/null || echo "No APK found"
+          echo "📋 Flutter doctor:"
+          flutter doctor -v
