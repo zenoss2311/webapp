@@ -1,74 +1,185 @@
+# .github/workflows/flutter_build_apk.yml
 name: Flutter Build APK
 
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: "ID job dari Telegram"
-        required: true
-      zip_path:
-        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
-        required: false
-        default: ""
       zip_url:
-        description: "Direct URL zip. Kosongkan jika pakai zip_path"
-        required: false
-        default: ""
+        description: 'URL ZIP file Flutter project'
+        required: true
+        type: string
+      tag:
+        description: 'Build tag'
+        required: true
+        type: string
+      build_type:
+        description: 'Build type (debug/release)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
 
 jobs:
   build:
+    name: Build Flutter APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repo
+      # Step 1: Setup environment
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.22.0'
+          channel: 'stable'
           cache: true
 
-      - name: Prepare workspace
+      - name: Download and extract project
         run: |
-          set -e
-          mkdir -p work
-          cd work
+          echo "📥 Downloading project from: ${{ inputs.zip_url }}"
+          curl -L -o project.zip "${{ inputs.zip_url }}"
+          mkdir -p project
+          unzip -q project.zip -d project/
+          ls -la project/
+          
+          # Cek pubspec.yaml
+          if [ ! -f "project/pubspec.yaml" ]; then
+            echo "❌ pubspec.yaml not found!"
+            exit 1
+          fi
+          
+          # Copy project ke workspace
+          cp -r project/* ./
+          rm -rf project project.zip
 
-          if [ -n "${{ inputs.zip_url }}" ]; then
-            echo "MODE: zip_url"
-            curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
-          elif [ -n "${{ inputs.zip_path }}" ]; then
-            echo "MODE: zip_path"
-            cp "../${{ inputs.zip_path }}" project.zip
+      - name: Flutter clean
+        run: flutter clean
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Generate build files
+        run: |
+          # Cek apakah ada build_runner
+          if grep -q "build_runner" pubspec.yaml; then
+            flutter pub run build_runner build --delete-conflicting-outputs
+          fi
+
+      - name: Analyze project
+        run: |
+          flutter analyze || true
+
+      - name: Build APK
+        run: |
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            flutter build apk --debug
           else
-            echo "ERROR: zip_url atau zip_path wajib diisi."
+            flutter build apk --release
+          fi
+
+      - name: Verify APK
+        run: |
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            APK_PATH="build/app/outputs/flutter-apk/app-debug.apk"
+          else
+            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+          fi
+          
+          if [ -f "$APK_PATH" ]; then
+            echo "✅ APK found: $APK_PATH"
+            ls -la "$APK_PATH"
+          else
+            echo "❌ APK not found!"
             exit 1
           fi
 
-          unzip -q project.zip -d project
-
-      - name: Flutter pub get
-        working-directory: work/project
-        run: flutter pub get
-
-      - name: Build APK (release)
-        working-directory: work/project
-        run: flutter build apk --release
-
-      - name: Collect outputs
-        run: |
-          mkdir -p out
-          cp work/project/build/app/outputs/flutter-apk/app-release.apk "out/app-release-${{ inputs.job_id }}.apk"
-
-      - name: Upload artifact
+      - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ inputs.job_id }}
-          path: out/*.apk 
+          name: flutter-apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            !build/app/outputs/flutter-apk/*.apk.sha1
+          retention-days: 7
+
+      - name: Upload to Release
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            APK_PATH="build/app/outputs/flutter-apk/app-debug.apk"
+          else
+            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+          fi
+          
+          # Get release ID from tag
+          RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}" \
+            | jq -r '.id')
+          
+          if [ "$RELEASE_ID" == "null" ]; then
+            echo "⚠️ Release not found, creating new release..."
+            
+            # Create release
+            RELEASE_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${{ inputs.tag }}\",\"name\":\"Build ${{ inputs.tag }}\",\"draft\":false,\"prerelease\":true}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases")
+            
+            RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+            UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
+          else
+            # Get upload URL
+            UPLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" \
+              | jq -r '.upload_url' | sed 's/{?name,label}//')
+          fi
+          
+          # Upload APK to release
+          APK_NAME=$(basename "$APK_PATH")
+          echo "📤 Uploading $APK_NAME to release..."
+          
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/zip" \
+            --data-binary @"$APK_PATH" \
+            "$UPLOAD_URL?name=$APK_NAME"
+          
+          echo "✅ APK uploaded to release!"
+
+      - name: Summary
+        run: |
+          echo "## 📱 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Type | ${{ inputs.build_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${{ inputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            APK_PATH="build/app/outputs/flutter-apk/app-debug.apk"
+          else
+            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+          fi
+          
+          if [ -f "$APK_PATH" ]; then
+            SIZE=$(du -h "$APK_PATH" | cut -f1)
+            echo "| APK Size | $SIZE |" >> $GITHUB_STEP_SUMMARY
+          fi
