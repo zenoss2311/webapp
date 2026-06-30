@@ -1,0 +1,81 @@
+name: Web to APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: 'URL website'
+        required: true
+        type: string
+      app_name:
+        description: 'Nama aplikasi'
+        required: true
+        type: string
+      icon_url:
+        description: 'URL icon aplikasi'
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build Web2APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install PWABuilder
+        run: |
+          npm install -g @pwa/pwabuilder
+
+      - name: Download icon
+        if: inputs.icon_url != ''
+        run: |
+          curl -L -o icon.png "${{ inputs.icon_url }}"
+          echo "✅ Icon downloaded"
+
+      - name: Create Web APK
+        id: build
+        run: |
+          # Gunakan PWABuilder atau tool lain untuk convert web ke APK
+          mkdir -p output
+          
+          # Contoh dengan PWABuilder
+          if [ -f icon.png ]; then
+            pwabuilder build "${{ inputs.web_url }}" --platform android --icon icon.png --name "${{ inputs.app_name }}" --output output/
+          else
+            pwabuilder build "${{ inputs.web_url }}" --platform android --name "${{ inputs.app_name }}" --output output/
+          fi
+          
+          # Cari APK
+          APK_FILE=$(find output -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ No APK found!"
+            exit 1
+          fi
+          
+          echo "apk_path=$APK_FILE" >> $GITHUB_OUTPUT
+          echo "✅ APK built: $APK_FILE"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: web2apk-${{ inputs.app_name }}
+          path: ${{ steps.build.outputs.apk_path }}
+          retention-days: 7
