@@ -16,6 +16,11 @@ on:
         required: true
         default: "release"
         type: string
+      flutter_version:
+        description: "Flutter SDK version (leave default for latest stable)"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   build:
@@ -32,7 +37,16 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Set up Flutter
+      - name: Set up Flutter (custom version)
+        if: ${{ inputs.flutter_version != '' }}
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ inputs.flutter_version }}
+          cache: true
+
+      - name: Set up Flutter (latest stable)
+        if: ${{ inputs.flutter_version == '' }}
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
@@ -101,6 +115,14 @@ jobs:
 
       - name: Flutter pub get
         run: flutter pub get
+
+      - name: Patch known-incompatible old packages
+        run: |
+          if grep -q "font_awesome_flutter" pubspec.yaml; then
+            echo "🔧 Upgrading font_awesome_flutter (old versions break on newer Dart's final IconData)..."
+            flutter pub upgrade font_awesome_flutter --major-versions || true
+          fi
+        shell: bash
 
       - name: Build APK (debug)
         if: ${{ inputs.build_type == 'debug' }}
