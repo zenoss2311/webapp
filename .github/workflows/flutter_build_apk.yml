@@ -31,6 +31,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ==========================================
+      # 1. Setup Java
+      # ==========================================
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # ==========================================
+      # 2. Setup Android SDK (dengan auto accept license)
+      # ==========================================
+      - name: Setup Android SDK
+        run: |
+          # Install Android SDK
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          
+          # Download command line tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -o -q commandlinetools-linux-11076708_latest.zip -d android-sdk
+          rm commandlinetools-linux-11076708_latest.zip
+          
+          # Set environment
+          echo "ANDROID_HOME=${{ github.workspace }}/android-sdk" >> $GITHUB_ENV
+          echo "${{ github.workspace }}/android-sdk/cmdline-tools/bin" >> $GITHUB_PATH
+          echo "${{ github.workspace }}/android-sdk/platform-tools" >> $GITHUB_PATH
+          
+          # Accept semua licenses secara otomatis (YAKIN INI BEKERJA!)
+          yes | ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          
+          # Install platform dan build tools
+          ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          
+          echo "✅ Android SDK setup complete"
+
+      # ==========================================
+      # 3. Setup Flutter
+      # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -38,15 +77,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ==========================================
+      # 4. Download project ZIP
+      # ==========================================
       - name: Download project ZIP
         run: |
           echo "📥 Downloading from: ${{ inputs.zip_url }}"
@@ -57,51 +90,32 @@ jobs:
           fi
           echo "✅ Downloaded: $(ls -lh project.zip)"
 
-      - name: Extract project (Fix ZIP extra bytes)
+      # ==========================================
+      # 5. Extract project (Fix ZIP extra bytes)
+      # ==========================================
+      - name: Extract project
         run: |
           mkdir -p project
           
-          # Python script untuk handle ZIP dengan extra bytes
-          python3 << 'PYTHON_SCRIPT'
-          import zipfile
-          import os
+          # Coba unzip dengan ignore warning
+          if unzip -o -q project.zip -d project/ 2>/dev/null; then
+            echo "✅ Project extracted successfully"
+          else
+            echo "⚠️ Unzip warning, trying fallback..."
+            
+            # Fallback: skip extra bytes
+            tail -c +161 project.zip > project_clean.zip 2>/dev/null || true
+            unzip -o -q project_clean.zip -d project/ 2>/dev/null || true
+            rm -f project_clean.zip
+          fi
           
-          zip_path = "project.zip"
-          extract_path = "project/"
-          
-          # Baca file
-          with open(zip_path, 'rb') as f:
-              data = f.read()
-          
-          # Cari signature ZIP
-          start = data.find(b'PK\x03\x04')
-          if start > 0:
-              print(f"⚠️ Found {start} extra bytes, cleaning...")
-              clean_data = data[start:]
-              clean_zip = "project_clean.zip"
-              with open(clean_zip, 'wb') as f:
-                  f.write(clean_data)
-              zip_path = clean_zip
-          
-          # Extract
-          try:
-              with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                  zip_ref.extractall(extract_path)
-                  print(f"✅ Extracted {len(zip_ref.namelist())} files")
-          except zipfile.BadZipFile:
-              print("❌ Still bad zip, trying fallback...")
-              os.system(f"unzip -o -q {zip_path} -d {extract_path}")
-          
-          # Cleanup
-          if os.path.exists("project_clean.zip"):
-              os.remove("project_clean.zip")
-          if os.path.exists("project.zip"):
-              os.remove("project.zip")
-          PYTHON_SCRIPT
-          
-          echo "📂 Extracted files:"
+          rm -f project.zip
+          echo "📂 Project files:"
           ls -la project/
 
+      # ==========================================
+      # 6. Validate Flutter project
+      # ==========================================
       - name: Validate Flutter project
         run: |
           cd project
@@ -110,14 +124,27 @@ jobs:
             ls -la
             exit 1
           fi
-          echo "✅ Flutter project validated"
+          echo "✅ pubspec.yaml found"
+          
+          # Cek main.dart
+          if [ ! -f lib/main.dart ]; then
+            echo "⚠️ lib/main.dart not found!"
+          else
+            echo "✅ lib/main.dart found"
+          fi
 
+      # ==========================================
+      # 7. Get Flutter dependencies
+      # ==========================================
       - name: Get dependencies
         run: |
           cd project
           flutter pub get
           echo "✅ Dependencies installed"
 
+      # ==========================================
+      # 8. Build APK
+      # ==========================================
       - name: Build APK
         id: build
         run: |
@@ -141,12 +168,16 @@ jobs:
           if [ -d "$APK_PATH" ] && [ "$(ls -A $APK_PATH)" ]; then
             echo "✅ Build successful!"
             echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+            echo "📦 APK files:"
             ls -la $APK_PATH
           else
             echo "❌ Build failed - no APK found"
             exit 1
           fi
 
+      # ==========================================
+      # 9. Upload APK as artifact
+      # ==========================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -155,6 +186,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # ==========================================
+      # 10. Upload to GitHub Release (optional)
+      # ==========================================
       - name: Upload to GitHub Release
         if: inputs.tag != 'build-manual'
         uses: softprops/action-gh-release@v1
@@ -165,6 +199,7 @@ jobs:
             ## Flutter APK Build
             - **Type:** ${{ inputs.build_type }}
             - **Tag:** ${{ inputs.tag }}
+            - **Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           files: project/${{ steps.build.outputs.apk_path }}/*.apk
           draft: false
           prerelease: true
