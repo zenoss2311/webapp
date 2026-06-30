@@ -61,12 +61,12 @@ jobs:
           echo "✅ Android SDK setup complete"
 
       # ==========================================
-      # 3. Setup Flutter (Support SDK ^3.8.1)
+      # 3. Setup Flutter (Versi terbaru)
       # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.4'  # Compatible dengan SDK ^3.8.1
+          flutter-version: '3.29.0'  # Dart 3.8.0+
           channel: 'stable'
           cache: true
 
@@ -206,8 +206,8 @@ jobs:
             ## Flutter APK Build
             - **Type:** ${{ inputs.build_type }}
             - **Tag:** ${{ inputs.tag }}
-            - **Flutter Version:** 3.27.4
-            - **Dart SDK:** ^3.8.1
+            - **Flutter Version:** 3.29.0
+            - **Dart SDK:** 3.8.0+
             - **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           files: project/${{ steps.build.outputs.apk_path }}/*.apk
           draft: false
