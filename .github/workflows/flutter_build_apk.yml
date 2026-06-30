@@ -41,39 +41,32 @@ jobs:
           java-version: '17'
 
       # ==========================================
-      # 2. Setup Android SDK (dengan auto accept license)
+      # 2. Setup Android SDK
       # ==========================================
       - name: Setup Android SDK
         run: |
-          # Install Android SDK
           sudo apt-get update
           sudo apt-get install -y wget unzip
           
-          # Download command line tools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -o -q commandlinetools-linux-11076708_latest.zip -d android-sdk
           rm commandlinetools-linux-11076708_latest.zip
           
-          # Set environment
           echo "ANDROID_HOME=${{ github.workspace }}/android-sdk" >> $GITHUB_ENV
           echo "${{ github.workspace }}/android-sdk/cmdline-tools/bin" >> $GITHUB_PATH
-          echo "${{ github.workspace }}/android-sdk/platform-tools" >> $GITHUB_PATH
           
-          # Accept semua licenses secara otomatis (YAKIN INI BEKERJA!)
           yes | ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-          
-          # Install platform dan build tools
           ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
           
           echo "✅ Android SDK setup complete"
 
       # ==========================================
-      # 3. Setup Flutter
+      # 3. Setup Flutter (VERSI YANG DIBUTUHKAN)
       # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.24.4'  # <-- PAKAI INI
           channel: 'stable'
           cache: true
 
@@ -91,19 +84,16 @@ jobs:
           echo "✅ Downloaded: $(ls -lh project.zip)"
 
       # ==========================================
-      # 5. Extract project (Fix ZIP extra bytes)
+      # 5. Extract project
       # ==========================================
       - name: Extract project
         run: |
           mkdir -p project
           
-          # Coba unzip dengan ignore warning
           if unzip -o -q project.zip -d project/ 2>/dev/null; then
             echo "✅ Project extracted successfully"
           else
             echo "⚠️ Unzip warning, trying fallback..."
-            
-            # Fallback: skip extra bytes
             tail -c +161 project.zip > project_clean.zip 2>/dev/null || true
             unzip -o -q project_clean.zip -d project/ 2>/dev/null || true
             rm -f project_clean.zip
@@ -125,13 +115,6 @@ jobs:
             exit 1
           fi
           echo "✅ pubspec.yaml found"
-          
-          # Cek main.dart
-          if [ ! -f lib/main.dart ]; then
-            echo "⚠️ lib/main.dart not found!"
-          else
-            echo "✅ lib/main.dart found"
-          fi
 
       # ==========================================
       # 7. Get Flutter dependencies
@@ -176,7 +159,7 @@ jobs:
           fi
 
       # ==========================================
-      # 9. Upload APK as artifact
+      # 9. Upload APK
       # ==========================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -187,7 +170,7 @@ jobs:
           if-no-files-found: error
 
       # ==========================================
-      # 10. Upload to GitHub Release (optional)
+      # 10. Upload to GitHub Release
       # ==========================================
       - name: Upload to GitHub Release
         if: inputs.tag != 'build-manual'
@@ -199,7 +182,6 @@ jobs:
             ## Flutter APK Build
             - **Type:** ${{ inputs.build_type }}
             - **Tag:** ${{ inputs.tag }}
-            - **Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           files: project/${{ steps.build.outputs.apk_path }}/*.apk
           draft: false
           prerelease: true
