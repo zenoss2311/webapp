@@ -28,7 +28,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # Step 1: Setup environment
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -50,17 +49,34 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # Step 2: Download and extract project
       - name: Download and extract project
         run: |
           echo "📥 Downloading project from: ${{ inputs.zip_url }}"
-          curl -L -o project.zip "${{ inputs.zip_url }}"
           
-          # Cek apakah file ZIP valid
+          # Download dengan fail fast
+          curl -L -f -o project.zip "${{ inputs.zip_url }}"
+          
+          # Cek apakah download sukses
+          if [ ! -f "project.zip" ]; then
+            echo "❌ Download failed!"
+            exit 1
+          fi
+          
+          # DIAGNOSTIC: Cek apa yang didownload
+          echo "🔍 Checking downloaded file..."
+          file project.zip
+          echo "📏 Size: $(du -h project.zip | cut -f1)"
+          echo "📄 First 500 bytes:"
+          head -c 500 project.zip | cat -v
+          echo ""
+          
+          # Validasi ZIP
           echo "🔍 Validating ZIP file..."
           if ! file project.zip | grep -q "Zip archive"; then
             echo "❌ File is not a valid ZIP archive!"
-            file project.zip
+            echo "📄 File content type: $(file project.zip)"
+            echo "📄 First 500 bytes:"
+            head -c 500 project.zip
             exit 1
           fi
           
@@ -76,6 +92,8 @@ jobs:
           
           if ! unzip -q project.zip -d project/; then
             echo "❌ Failed to extract ZIP!"
+            echo "📄 Try using 7z:"
+            7z l project.zip | head -20
             exit 1
           fi
           
@@ -87,6 +105,8 @@ jobs:
             echo "❌ pubspec.yaml not found!"
             echo "📂 Files in root:"
             ls -la project/
+            echo "🔍 Searching for pubspec.yaml:"
+            find project -name "pubspec.yaml" -type f
             exit 1
           fi
           
@@ -94,27 +114,22 @@ jobs:
           cp -r project/* ./
           rm -rf project project.zip
 
-      # Step 3: Flutter clean & get dependencies
       - name: Flutter clean
         run: flutter clean
 
       - name: Flutter pub get
         run: flutter pub get
 
-      # Step 4: Generate build files (if needed)
       - name: Generate build files
         run: |
-          # Cek apakah ada build_runner
           if grep -q "build_runner" pubspec.yaml; then
             flutter pub run build_runner build --delete-conflicting-outputs || true
           fi
 
-      # Step 5: Analyze project
       - name: Analyze project
         run: |
           flutter analyze || true
 
-      # Step 6: Build APK
       - name: Build APK
         run: |
           if [ "${{ inputs.build_type }}" == "debug" ]; then
@@ -123,7 +138,6 @@ jobs:
             flutter build apk --release
           fi
 
-      # Step 7: Verify APK
       - name: Verify APK
         run: |
           if [ "${{ inputs.build_type }}" == "debug" ]; then
@@ -143,7 +157,6 @@ jobs:
             exit 1
           fi
 
-      # Step 8: Upload APK as Artifact
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -154,7 +167,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # Step 9: Upload to Release
       - name: Upload to Release
         if: success()
         env:
@@ -171,14 +183,12 @@ jobs:
           
           echo "📤 Uploading $APK_NAME ($APK_SIZE) to release..."
           
-          # Get release ID from tag
           RELEASE_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}")
           
           RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
           UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
           
-          # If release not found, create new release
           if [ "$RELEASE_ID" == "null" ]; then
             echo "⚠️ Release not found, creating new release..."
             
@@ -197,9 +207,6 @@ jobs:
             exit 1
           fi
           
-          # Upload APK to release
-          echo "📤 Uploading to: $UPLOAD_URL?name=$APK_NAME"
-          
           curl -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Content-Type: application/vnd.android.package-archive" \
@@ -208,7 +215,6 @@ jobs:
           
           echo "✅ APK uploaded to release!"
 
-      # Step 10: Summary
       - name: Summary
         run: |
           echo "## 📱 Build Summary" >> $GITHUB_STEP_SUMMARY
