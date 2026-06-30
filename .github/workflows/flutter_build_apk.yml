@@ -1,231 +1,72 @@
-name: Flutter Build APK
-
 on:
   workflow_dispatch:
     inputs:
-      zip_url:
-        description: 'URL ZIP file project Flutter'
+      job_id:
+        description: "ID job dari Telegram"
         required: true
-        type: string
-      tag:
-        description: 'Tag build'
+      zip_path:
+        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
         required: false
-        type: string
-        default: 'build-manual'
-      build_type:
-        description: 'Tipe build'
-        required: true
-        type: choice
-        options:
-          - debug
-          - release
-        default: 'release'
+        default: ""
+      zip_url:
+        description: "Direct URL zip. Kosongkan jika pakai zip_path"
+        required: false
+        default: ""
 
 jobs:
   build:
-    name: Build Flutter APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ==========================================
-      # 1. Setup Java
-      # ==========================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
-      # ==========================================
-      # 2. Setup Android SDK
-      # ==========================================
-      - name: Setup Android SDK
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
-          
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -o -q commandlinetools-linux-11076708_latest.zip -d android-sdk
-          rm commandlinetools-linux-11076708_latest.zip
-          
-          echo "ANDROID_HOME=${{ github.workspace }}/android-sdk" >> $GITHUB_ENV
-          echo "${{ github.workspace }}/android-sdk/cmdline-tools/bin" >> $GITHUB_PATH
-          
-          yes | ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-          ${{ github.workspace }}/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
-          
-          echo "✅ Android SDK setup complete"
-
-      # ==========================================
-      # 3. Setup Flutter (Versi terbaru)
-      # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'  # Dart 3.8.0+
-          channel: 'stable'
+          channel: stable
           cache: true
 
-      # ==========================================
-      # 4. Verify Flutter & Dart version
-      # ==========================================
-      - name: Verify Flutter version
+      - name: Prepare workspace
         run: |
-          flutter --version
-          dart --version
+          set -e
+          mkdir -p work
+          cd work
 
-      # ==========================================
-      # 5. Download project ZIP
-      # ==========================================
-      - name: Download project ZIP
-        run: |
-          echo "📥 Downloading from: ${{ inputs.zip_url }}"
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          if [ ! -f project.zip ]; then
-            echo "❌ Failed to download"
-            exit 1
-          fi
-          echo "✅ Downloaded: $(ls -lh project.zip)"
-
-      # ==========================================
-      # 6. Extract project
-      # ==========================================
-      - name: Extract project
-        run: |
-          mkdir -p project
-          
-          if unzip -o -q project.zip -d project/ 2>/dev/null; then
-            echo "✅ Project extracted successfully"
+          if [ -n "${{ inputs.zip_url }}" ]; then
+            echo "MODE: zip_url"
+            curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
+          elif [ -n "${{ inputs.zip_path }}" ]; then
+            echo "MODE: zip_path"
+            cp "../${{ inputs.zip_path }}" project.zip
           else
-            echo "⚠️ Unzip warning, trying fallback..."
-            tail -c +161 project.zip > project_clean.zip 2>/dev/null || true
-            unzip -o -q project_clean.zip -d project/ 2>/dev/null || true
-            rm -f project_clean.zip
-          fi
-          
-          rm -f project.zip
-          echo "📂 Project files:"
-          ls -la project/
-
-      # ==========================================
-      # 7. Validasi Flutter project & SDK
-      # ==========================================
-      - name: Validate Flutter project
-        run: |
-          cd project
-          if [ ! -f pubspec.yaml ]; then
-            echo "❌ pubspec.yaml not found!"
-            ls -la
-            exit 1
-          fi
-          echo "✅ pubspec.yaml found"
-          
-          echo "📋 SDK version required:"
-          grep -A 2 "environment:" pubspec.yaml || true
-
-      # ==========================================
-      # 8. Flutter clean
-      # ==========================================
-      - name: Clean project
-        run: |
-          cd project
-          flutter clean
-          echo "✅ Project cleaned"
-
-      # ==========================================
-      # 9. Get Flutter dependencies
-      # ==========================================
-      - name: Get dependencies
-        run: |
-          cd project
-          flutter pub get
-          echo "✅ Dependencies installed"
-
-      # ==========================================
-      # 10. Build APK
-      # ==========================================
-      - name: Build APK
-        id: build
-        run: |
-          cd project
-          
-          # Tampilkan versi Flutter yang digunakan
-          flutter --version
-          
-          if [ "${{ inputs.build_type }}" == "release" ]; then
-            echo "🚀 Building RELEASE APK..."
-            flutter build apk --release --split-per-abi
-          else
-            echo "🐞 Building DEBUG APK..."
-            flutter build apk --debug
-          fi
-          
-          # Cek hasil
-          if [ "${{ inputs.build_type }}" == "release" ]; then
-            APK_PATH="build/app/outputs/apk/release"
-          else
-            APK_PATH="build/app/outputs/apk/debug"
-          fi
-          
-          if [ -d "$APK_PATH" ] && [ "$(ls -A $APK_PATH)" ]; then
-            echo "✅ Build successful!"
-            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-            echo "📦 APK files:"
-            ls -la $APK_PATH
-          else
-            echo "❌ Build failed - no APK found"
-            ls -la build/app/outputs/apk/ || true
+            echo "ERROR: zip_url atau zip_path wajib diisi."
             exit 1
           fi
 
-      # ==========================================
-      # 11. Upload APK
-      # ==========================================
-      - name: Upload APK artifact
+          unzip -q project.zip -d project
+
+      - name: Flutter pub get
+        working-directory: work/project
+        run: flutter pub get
+
+      - name: Build APK (release)
+        working-directory: work/project
+        run: flutter build apk --release
+
+      - name: Collect outputs
+        run: |
+          mkdir -p out
+          cp work/project/build/app/outputs/flutter-apk/app-release.apk "out/app-release-${{ inputs.job_id }}.apk"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk-${{ inputs.build_type }}-${{ github.run_id }}
-          path: project/${{ steps.build.outputs.apk_path }}
-          retention-days: 7
-          if-no-files-found: error
-
-      # ==========================================
-      # 12. Upload to GitHub Release
-      # ==========================================
-      - name: Upload to GitHub Release
-        if: inputs.tag != 'build-manual' && success()
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: Build ${{ inputs.tag }}
-          body: |
-            ## Flutter APK Build
-            - **Type:** ${{ inputs.build_type }}
-            - **Tag:** ${{ inputs.tag }}
-            - **Flutter Version:** 3.29.0
-            - **Dart SDK:** 3.8.0+
-            - **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          files: project/${{ steps.build.outputs.apk_path }}/*.apk
-          draft: false
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ==========================================
-      # 13. Debug jika gagal
-      # ==========================================
-      - name: Debug build failure
-        if: failure()
-        run: |
-          echo "📂 Project structure:"
-          ls -la project/
-          echo "📂 Android folder:"
-          ls -la project/android/ || echo "No android folder"
-          echo "📂 Build outputs:"
-          find project -name "*.apk" 2>/dev/null || echo "No APK found"
-          echo "📋 Flutter doctor:"
-          flutter doctor -v
+          name: apk-${{ inputs.job_id }}
+          path: out/*.apk 
