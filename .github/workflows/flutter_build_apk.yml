@@ -1,0 +1,186 @@
+name: Flutter Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'URL ZIP file project Flutter'
+        required: true
+        type: string
+      tag:
+        description: 'Tag build (opsional)'
+        required: false
+        type: string
+        default: 'build-manual'
+      build_type:
+        description: 'Tipe build (debug/release)'
+        required: true
+        type: choice
+        options:
+          - debug
+          - release
+        default: 'release'
+
+jobs:
+  build:
+    name: Build Flutter APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ==========================================
+      # 1. Checkout repository
+      # ==========================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================
+      # 2. Setup Flutter SDK
+      # ==========================================
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+          cache: true
+
+      # ==========================================
+      # 3. Setup Java (untuk Android build)
+      # ==========================================
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # ==========================================
+      # 4. Setup Android SDK
+      # ==========================================
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ==========================================
+      # 5. Download project ZIP dari URL
+      # ==========================================
+      - name: Download project ZIP
+        run: |
+          echo "📥 Downloading project from: ${{ inputs.zip_url }}"
+          curl -L -o project.zip "${{ inputs.zip_url }}"
+          if [ ! -f project.zip ]; then
+            echo "❌ Failed to download project.zip"
+            exit 1
+          fi
+          echo "✅ Project downloaded successfully"
+          ls -la project.zip
+
+      # ==========================================
+      # 6. Extract project
+      # ==========================================
+      - name: Extract project
+        run: |
+          mkdir -p project
+          unzip -q project.zip -d project/
+          rm project.zip
+          echo "📂 Project extracted:"
+          ls -la project/
+
+      # ==========================================
+      # 7. Validate Flutter project
+      # ==========================================
+      - name: Validate Flutter project
+        run: |
+          cd project
+          if [ ! -f pubspec.yaml ]; then
+            echo "❌ pubspec.yaml not found! Not a Flutter project?"
+            exit 1
+          fi
+          echo "✅ pubspec.yaml found"
+
+      # ==========================================
+      # 8. Get Flutter dependencies
+      # ==========================================
+      - name: Get dependencies
+        run: |
+          cd project
+          flutter pub get
+          echo "✅ Dependencies installed"
+
+      # ==========================================
+      # 9. Build APK
+      # ==========================================
+      - name: Build APK
+        id: build
+        run: |
+          cd project
+          
+          if [ "${{ inputs.build_type }}" == "release" ]; then
+            echo "🚀 Building RELEASE APK..."
+            flutter build apk --release --split-per-abi
+          else
+            echo "🐞 Building DEBUG APK..."
+            flutter build apk --debug
+          fi
+          
+          # Cek hasil build
+          if [ "${{ inputs.build_type }}" == "release" ]; then
+            APK_PATH="build/app/outputs/apk/release"
+          else
+            APK_PATH="build/app/outputs/apk/debug"
+          fi
+          
+          if [ -d "$APK_PATH" ] && [ "$(ls -A $APK_PATH)" ]; then
+            echo "✅ Build successful!"
+            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Build failed - no APK found"
+            exit 1
+          fi
+
+      # ==========================================
+      # 10. Upload APK as artifact
+      # ==========================================
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-apk-${{ inputs.build_type }}
+          path: project/${{ steps.build.outputs.apk_path }}
+          retention-days: 7
+          if-no-files-found: error
+
+      # ==========================================
+      # 11. Upload APK ke release (opsional)
+      # ==========================================
+      - name: Upload to GitHub Release
+        if: inputs.tag != 'build-manual'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: Build ${{ inputs.tag }}
+          body: |
+            ## Flutter APK Build
+            - **Type:** ${{ inputs.build_type }}
+            - **Tag:** ${{ inputs.tag }}
+            - **Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          files: project/${{ steps.build.outputs.apk_path }}/*.apk
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ==========================================
+      # 12. Notifikasi success
+      # ==========================================
+      - name: Build Success
+        if: success()
+        run: |
+          echo "🎉 BUILD SUCCESSFUL!"
+          echo "📦 APK siap di-download dari artifact"
+
+      # ==========================================
+      # 13. Handle failure
+      # ==========================================
+      - name: Build Failed
+        if: failure()
+        run: |
+          echo "❌ BUILD FAILED"
+          echo "📋 Cek log di atas untuk detail error"
