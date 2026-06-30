@@ -36,66 +36,30 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
-          flutter-version: "3.22.0"
           cache: true
 
-      - name: Download and validate project ZIP
+      - name: Download project ZIP
         run: |
           echo "📥 Downloading project from: ${{ inputs.zip_url }}"
-          
-          # Download dengan retry dan fail fast
-          curl -L -f --retry 5 --retry-delay 5 -o project.zip "${{ inputs.zip_url }}"
-          
-          # Cek apakah file berhasil di-download
-          if [ ! -f "project.zip" ]; then
-            echo "❌ Download failed - file not found!"
+          curl -L -f --retry 3 --retry-delay 3 -o project.zip "${{ inputs.zip_url }}"
+
+          echo "🔍 Validating ZIP file..."
+          if ! file project.zip | grep -q "Zip archive"; then
+            echo "❌ File is not a valid ZIP archive!"
+            file project.zip
+            echo "📄 First 500 bytes of downloaded file (for debugging):"
+            head -c 500 project.zip
             exit 1
           fi
-          
-          # Cek ukuran file
+
           SIZE=$(du -h project.zip | cut -f1)
           echo "📏 ZIP size: $SIZE"
-          
-          # VALIDASI 1: Cek magic number ZIP (PK\x03\x04)
-          echo "🔍 Validating ZIP magic number..."
-          MAGIC=$(head -c 4 project.zip | od -An -tx1 | tr -d ' \n')
-          if [ "$MAGIC" != "504b0304" ]; then
-            echo "❌ Invalid ZIP magic number: $MAGIC"
-            echo "📄 First 200 bytes of downloaded file:"
-            head -c 200 project.zip | cat -v
-            echo ""
-            echo "📄 File type:"
-            file project.zip
-            exit 1
-          fi
-          echo "✅ ZIP magic number OK"
-          
-          # VALIDASI 2: Cek dengan file command
-          echo "🔍 Validating with file command..."
-          FILE_TYPE=$(file project.zip)
-          echo "File type: $FILE_TYPE"
-          
-          if echo "$FILE_TYPE" | grep -qi "Zip archive" || echo "$FILE_TYPE" | grep -qi "Zip data"; then
-            echo "✅ File recognized as ZIP"
-          else
-            echo "⚠️ Warning: file command doesn't recognize as ZIP, but magic number is OK. Continuing..."
-          fi
-          
-          # VALIDASI 3: Test unzip
-          echo "🔍 Testing unzip..."
-          if ! unzip -tq project.zip 2>/dev/null; then
-            echo "❌ Unzip test failed! File may be corrupted."
-            echo "📄 Trying to list contents:"
-            unzip -l project.zip || true
-            exit 1
-          fi
-          echo "✅ Unzip test passed"
+        shell: bash
 
       - name: Extract ZIP and locate Flutter project
         run: |
           mkdir -p project
           echo "📦 Extracting ZIP..."
-          
           if ! unzip -q project.zip -d project/; then
             echo "❌ Failed to extract ZIP!"
             exit 1
@@ -104,27 +68,17 @@ jobs:
           echo "📂 Top-level contents:"
           ls -la project/
 
-          # Cari pubspec.yaml (max depth 5)
-          PUBSPEC_DIR=$(find project -maxdepth 5 -name "pubspec.yaml" -printf '%h\n' | head -n 1)
+          PUBSPEC_DIR=$(find project -maxdepth 3 -name "pubspec.yaml" -printf '%h\n' | head -n 1)
 
           if [ -z "$PUBSPEC_DIR" ]; then
             echo "❌ pubspec.yaml not found anywhere in the ZIP!"
             echo "📂 Full tree (depth 3):"
             find project -maxdepth 3
-            echo ""
-            echo "🔍 Searching for pubspec.yaml:"
-            find project -name "pubspec.yaml" || true
             exit 1
           fi
 
           echo "✅ Found pubspec.yaml at: $PUBSPEC_DIR"
-          
-          # Tampilkan isi pubspec.yaml
-          echo "📄 pubspec.yaml content:"
-          cat "$PUBSPEC_DIR/pubspec.yaml" | head -20
 
-          # Copy isi folder yang benar ke workspace root
-          echo "📂 Copying project to workspace..."
           shopt -s dotglob
           cp -r "$PUBSPEC_DIR"/* ./
           shopt -u dotglob
@@ -133,21 +87,17 @@ jobs:
 
           echo "📂 Final workspace root:"
           ls -la
+        shell: bash
 
       - name: Verify pubspec.yaml
         run: |
           if [ ! -f "pubspec.yaml" ]; then
             echo "❌ pubspec.yaml not found in workspace root after copy!"
-            echo "📂 Current directory contents:"
-            ls -la
             exit 1
           fi
-          echo "✅ pubspec.yaml confirmed"
-          echo "📄 Package name: $(grep '^name:' pubspec.yaml | head -1)"
-          echo "📄 Version: $(grep '^version:' pubspec.yaml | head -1)"
-
-      - name: Flutter clean
-        run: flutter clean
+          echo "✅ pubspec.yaml confirmed:"
+          cat pubspec.yaml | head -20
+        shell: bash
 
       - name: Flutter pub get
         run: flutter pub get
@@ -162,57 +112,23 @@ jobs:
 
       - name: Locate built APK
         run: |
-          echo "🔍 Searching for built APK..."
-          
-          # Cari semua APK
-          find build -name "*.apk" -type f 2>/dev/null || true
-          
-          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -n 1)
-          
+          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "❌ No APK file found after build!"
-            echo "📂 Build directory structure:"
-            find build -type d | head -20
+            find build -name "*.apk" || true
             exit 1
           fi
-          
           echo "✅ APK found at: $APK_PATH"
           mkdir -p output
           cp "$APK_PATH" output/
-          
-          APK_SIZE=$(du -h output/*.apk | cut -f1)
-          echo "📏 APK size: $APK_SIZE"
-          echo "📄 APK info:"
+          echo "📏 APK info:"
           ls -la output/
+        shell: bash
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.tag }}
           path: output/*.apk
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
-
-      - name: Build Summary
-        if: always()
-        run: |
-          echo "## 📱 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Type | ${{ inputs.build_type }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | ${{ inputs.tag }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "pubspec.yaml" ]; then
-            NAME=$(grep '^name:' pubspec.yaml | head -1 | cut -d':' -f2 | xargs)
-            VERSION=$(grep '^version:' pubspec.yaml | head -1 | cut -d':' -f2 | xargs)
-            echo "| Project | $NAME |" >> $GITHUB_STEP_SUMMARY
-            echo "| Version | $VERSION |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if ls output/*.apk 2>/dev/null | grep -q ".apk"; then
-            SIZE=$(du -h output/*.apk | cut -f1)
-            echo "| APK Size | $SIZE |" >> $GITHUB_STEP_SUMMARY
-            echo "| Download | [APK Artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
-          fi
