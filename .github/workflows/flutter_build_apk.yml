@@ -40,6 +40,8 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 'latest'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -48,17 +50,43 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # Step 2: Download and extract project
       - name: Download and extract project
         run: |
           echo "📥 Downloading project from: ${{ inputs.zip_url }}"
           curl -L -o project.zip "${{ inputs.zip_url }}"
+          
+          # Cek apakah file ZIP valid
+          echo "🔍 Validating ZIP file..."
+          if ! file project.zip | grep -q "Zip archive"; then
+            echo "❌ File is not a valid ZIP archive!"
+            file project.zip
+            exit 1
+          fi
+          
+          # Cek ukuran file
+          SIZE=$(du -h project.zip | cut -f1)
+          echo "📏 ZIP size: $SIZE"
+          
           mkdir -p project
-          unzip -q project.zip -d project/
+          
+          # Extract dengan verbose
+          echo "📦 Extracting ZIP..."
+          unzip -v project.zip | head -20
+          
+          if ! unzip -q project.zip -d project/; then
+            echo "❌ Failed to extract ZIP!"
+            exit 1
+          fi
+          
+          echo "📂 Files extracted:"
           ls -la project/
           
           # Cek pubspec.yaml
           if [ ! -f "project/pubspec.yaml" ]; then
             echo "❌ pubspec.yaml not found!"
+            echo "📂 Files in root:"
+            ls -la project/
             exit 1
           fi
           
@@ -66,23 +94,27 @@ jobs:
           cp -r project/* ./
           rm -rf project project.zip
 
+      # Step 3: Flutter clean & get dependencies
       - name: Flutter clean
         run: flutter clean
 
       - name: Flutter pub get
         run: flutter pub get
 
+      # Step 4: Generate build files (if needed)
       - name: Generate build files
         run: |
           # Cek apakah ada build_runner
           if grep -q "build_runner" pubspec.yaml; then
-            flutter pub run build_runner build --delete-conflicting-outputs
+            flutter pub run build_runner build --delete-conflicting-outputs || true
           fi
 
+      # Step 5: Analyze project
       - name: Analyze project
         run: |
           flutter analyze || true
 
+      # Step 6: Build APK
       - name: Build APK
         run: |
           if [ "${{ inputs.build_type }}" == "debug" ]; then
@@ -91,6 +123,7 @@ jobs:
             flutter build apk --release
           fi
 
+      # Step 7: Verify APK
       - name: Verify APK
         run: |
           if [ "${{ inputs.build_type }}" == "debug" ]; then
@@ -102,20 +135,26 @@ jobs:
           if [ -f "$APK_PATH" ]; then
             echo "✅ APK found: $APK_PATH"
             ls -la "$APK_PATH"
+            APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+            echo "📏 APK size: $APK_SIZE"
           else
             echo "❌ APK not found!"
+            find build/app/outputs -name "*.apk" -type f || true
             exit 1
           fi
 
+      # Step 8: Upload APK as Artifact
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk
+          name: flutter-apk-${{ inputs.build_type }}
           path: |
             build/app/outputs/flutter-apk/*.apk
             !build/app/outputs/flutter-apk/*.apk.sha1
           retention-days: 7
+          if-no-files-found: error
 
+      # Step 9: Upload to Release
       - name: Upload to Release
         if: success()
         env:
@@ -127,15 +166,22 @@ jobs:
             APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
           fi
           
-          # Get release ID from tag
-          RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}" \
-            | jq -r '.id')
+          APK_NAME=$(basename "$APK_PATH")
+          APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
           
+          echo "📤 Uploading $APK_NAME ($APK_SIZE) to release..."
+          
+          # Get release ID from tag
+          RELEASE_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}")
+          
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
+          
+          # If release not found, create new release
           if [ "$RELEASE_ID" == "null" ]; then
             echo "⚠️ Release not found, creating new release..."
             
-            # Create release
             RELEASE_RESPONSE=$(curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Content-Type: application/json" \
@@ -144,25 +190,25 @@ jobs:
             
             RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
             UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
-          else
-            # Get upload URL
-            UPLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" \
-              | jq -r '.upload_url' | sed 's/{?name,label}//')
+          fi
+          
+          if [ "$RELEASE_ID" == "null" ] || [ -z "$UPLOAD_URL" ]; then
+            echo "❌ Failed to get release info!"
+            exit 1
           fi
           
           # Upload APK to release
-          APK_NAME=$(basename "$APK_PATH")
-          echo "📤 Uploading $APK_NAME to release..."
+          echo "📤 Uploading to: $UPLOAD_URL?name=$APK_NAME"
           
           curl -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Content-Type: application/zip" \
+            -H "Content-Type: application/vnd.android.package-archive" \
             --data-binary @"$APK_PATH" \
             "$UPLOAD_URL?name=$APK_NAME"
           
           echo "✅ APK uploaded to release!"
 
+      # Step 10: Summary
       - name: Summary
         run: |
           echo "## 📱 Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -182,4 +228,5 @@ jobs:
           if [ -f "$APK_PATH" ]; then
             SIZE=$(du -h "$APK_PATH" | cut -f1)
             echo "| APK Size | $SIZE |" >> $GITHUB_STEP_SUMMARY
+            echo "| APK Path | $APK_PATH |" >> $GITHUB_STEP_SUMMARY
           fi
