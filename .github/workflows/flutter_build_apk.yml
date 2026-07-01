@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: "ID job dari Telegram"
+        description: "ID job dari Telegram (dipetakan dari 'tag' di server.js)"
         required: true
       zip_path:
         description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
@@ -14,6 +14,10 @@ on:
         description: "Direct URL zip. Kosongkan jika pakai zip_path"
         required: false
         default: ""
+      build_type:
+        description: "debug atau release"
+        required: false
+        default: "release"
 
 jobs:
   build:
@@ -59,14 +63,12 @@ jobs:
             exit 1
           fi
 
-          # Cari root project Flutter (folder yang ada pubspec.yaml)
           unzip -q project.zip -d extracted
 
           FLUTTER_ROOT=""
           if [ -f "extracted/pubspec.yaml" ]; then
             FLUTTER_ROOT="extracted"
           else
-            # Cari sampai 3 level ke dalam (zip kadang punya folder pembungkus ganda)
             FOUND=$(find extracted -maxdepth 3 -name "pubspec.yaml" | head -n 1)
             if [ -n "$FOUND" ]; then
               FLUTTER_ROOT="$(dirname "$FOUND")"
@@ -90,26 +92,35 @@ jobs:
         working-directory: work/project
         run: flutter pub get
 
-      - name: Build APK (release)
+      - name: Patch known-incompatible old packages
+        working-directory: work/project
+        run: |
+          if grep -q "font_awesome_flutter" pubspec.yaml; then
+            echo "🔧 Upgrading font_awesome_flutter (final IconData fix)..."
+            flutter pub upgrade font_awesome_flutter --major-versions || true
+          fi
+        shell: bash
+
+      - name: Build APK (debug)
+        if: ${{ inputs.build_type == 'debug' }}
         working-directory: work/project
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
-        run: |
-          set -e
-          flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --debug --no-tree-shake-icons
+
+      - name: Build APK (release)
+        if: ${{ inputs.build_type != 'debug' }}
+        working-directory: work/project
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Collect outputs
         run: |
           set -e
           mkdir -p out
 
-          APK_PATH=""
-          if [ -f "work/project/build/app/outputs/flutter-apk/app-release.apk" ]; then
-            APK_PATH="work/project/build/app/outputs/flutter-apk/app-release.apk"
-          else
-            # Fallback: cari apk release manapun (flavor / split-per-abi dll)
-            APK_PATH=$(find work/project/build -type f -name "*release*.apk" | head -n 1)
-          fi
+          APK_PATH=$(find work/project/build -type f -name "*.apk" | head -n 1)
 
           if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
             echo "ERROR: APK hasil build tidak ditemukan."
@@ -118,7 +129,7 @@ jobs:
           fi
 
           echo "APK found: $APK_PATH"
-          cp "$APK_PATH" "out/app-release-${{ inputs.job_id }}.apk"
+          cp "$APK_PATH" "out/app-${{ inputs.build_type }}-${{ inputs.job_id }}.apk"
 
           ls -lh out/
 
