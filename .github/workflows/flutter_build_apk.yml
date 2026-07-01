@@ -1,156 +1,132 @@
-name: Flutter Build APK
+name: Build Flutter APK (zip path OR url)
 
 on:
   workflow_dispatch:
     inputs:
-      zip_url:
-        description: "Direct download URL to the project ZIP (GitHub release asset)"
+      job_id:
+        description: "ID job dari Telegram"
         required: true
-        type: string
-      tag:
-        description: "Build tag (used for naming/logging)"
-        required: true
-        type: string
-      build_type:
-        description: "Build type: debug or release"
-        required: true
-        default: "release"
-        type: string
-      flutter_version:
-        description: "Flutter SDK version (leave default for latest stable)"
+      zip_path:
+        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
         required: false
         default: ""
-        type: string
+      zip_url:
+        description: "Direct URL zip. Kosongkan jika pakai zip_path"
+        required: false
+        default: ""
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
+          distribution: temurin
           java-version: "17"
 
-      - name: Set up Flutter (custom version)
-        if: ${{ inputs.flutter_version != '' }}
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
-          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
           cache: true
 
-      - name: Set up Flutter (latest stable)
-        if: ${{ inputs.flutter_version == '' }}
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          cache: true
-
-      - name: Download project ZIP
+      - name: Prepare workspace
         run: |
-          echo "📥 Downloading project from: ${{ inputs.zip_url }}"
-          curl -L -f --retry 3 --retry-delay 3 -o project.zip "${{ inputs.zip_url }}"
+          set -e
+          mkdir -p work
+          cd work
 
-          echo "🔍 Validating ZIP file..."
-          if ! file project.zip | grep -q "Zip archive"; then
-            echo "❌ File is not a valid ZIP archive!"
-            file project.zip
-            echo "📄 First 500 bytes of downloaded file (for debugging):"
-            head -c 500 project.zip
+          if [ -n "${{ inputs.zip_url }}" ]; then
+            echo "MODE: zip_url"
+            curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
+              -o project.zip "${{ inputs.zip_url }}"
+          elif [ -n "${{ inputs.zip_path }}" ]; then
+            echo "MODE: zip_path"
+            cp "../${{ inputs.zip_path }}" project.zip
+          else
+            echo "ERROR: zip_url atau zip_path wajib diisi."
             exit 1
           fi
 
-          SIZE=$(du -h project.zip | cut -f1)
-          echo "📏 ZIP size: $SIZE"
-        shell: bash
-
-      - name: Extract ZIP and locate Flutter project
-        run: |
-          mkdir -p project
-          echo "📦 Extracting ZIP..."
-          if ! unzip -q project.zip -d project/; then
-            echo "❌ Failed to extract ZIP!"
+          if [ ! -s project.zip ]; then
+            echo "ERROR: project.zip kosong / gagal didownload."
             exit 1
           fi
 
-          echo "📂 Top-level contents:"
-          ls -la project/
+          # Cari root project Flutter (folder yang ada pubspec.yaml)
+          unzip -q project.zip -d extracted
 
-          PUBSPEC_DIR=$(find project -maxdepth 3 -name "pubspec.yaml" -printf '%h\n' | head -n 1)
+          FLUTTER_ROOT=""
+          if [ -f "extracted/pubspec.yaml" ]; then
+            FLUTTER_ROOT="extracted"
+          else
+            # Cari sampai 3 level ke dalam (zip kadang punya folder pembungkus ganda)
+            FOUND=$(find extracted -maxdepth 3 -name "pubspec.yaml" | head -n 1)
+            if [ -n "$FOUND" ]; then
+              FLUTTER_ROOT="$(dirname "$FOUND")"
+            fi
+          fi
 
-          if [ -z "$PUBSPEC_DIR" ]; then
-            echo "❌ pubspec.yaml not found anywhere in the ZIP!"
-            echo "📂 Full tree (depth 3):"
-            find project -maxdepth 3
+          if [ -z "$FLUTTER_ROOT" ]; then
+            echo "ERROR: pubspec.yaml tidak ditemukan dalam zip."
+            echo "Isi zip:"
+            find extracted -maxdepth 3
             exit 1
           fi
 
-          echo "✅ Found pubspec.yaml at: $PUBSPEC_DIR"
+          echo "Flutter root: $FLUTTER_ROOT"
+          cp -r "$FLUTTER_ROOT" project
 
-          shopt -s dotglob
-          cp -r "$PUBSPEC_DIR"/* ./
-          shopt -u dotglob
-
-          rm -rf project project.zip
-
-          echo "📂 Final workspace root:"
-          ls -la
-        shell: bash
-
-      - name: Verify pubspec.yaml
-        run: |
-          if [ ! -f "pubspec.yaml" ]; then
-            echo "❌ pubspec.yaml not found in workspace root after copy!"
-            exit 1
-          fi
-          echo "✅ pubspec.yaml confirmed:"
-          cat pubspec.yaml | head -20
-        shell: bash
+      - name: Flutter doctor
+        run: flutter doctor -v
 
       - name: Flutter pub get
+        working-directory: work/project
         run: flutter pub get
 
-      - name: Patch known-incompatible old packages
-        run: |
-          if grep -q "font_awesome_flutter" pubspec.yaml; then
-            echo "🔧 Upgrading font_awesome_flutter (old versions break on newer Dart's final IconData)..."
-            flutter pub upgrade font_awesome_flutter --major-versions || true
-          fi
-        shell: bash
-
-      - name: Build APK (debug)
-        if: ${{ inputs.build_type == 'debug' }}
-        run: flutter build apk --debug
-
       - name: Build APK (release)
-        if: ${{ inputs.build_type != 'debug' }}
-        run: flutter build apk --release
-
-      - name: Locate built APK
+        working-directory: work/project
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
         run: |
-          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "❌ No APK file found after build!"
-            find build -name "*.apk" || true
+          set -e
+          flutter build apk --release --no-tree-shake-icons
+
+      - name: Collect outputs
+        run: |
+          set -e
+          mkdir -p out
+
+          APK_PATH=""
+          if [ -f "work/project/build/app/outputs/flutter-apk/app-release.apk" ]; then
+            APK_PATH="work/project/build/app/outputs/flutter-apk/app-release.apk"
+          else
+            # Fallback: cari apk release manapun (flavor / split-per-abi dll)
+            APK_PATH=$(find work/project/build -type f -name "*release*.apk" | head -n 1)
+          fi
+
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: APK hasil build tidak ditemukan."
+            find work/project/build -type f -name "*.apk" || true
             exit 1
           fi
-          echo "✅ APK found at: $APK_PATH"
-          mkdir -p output
-          cp "$APK_PATH" output/
-          echo "📏 APK info:"
-          ls -la output/
-        shell: bash
 
-      - name: Upload APK artifact
+          echo "APK found: $APK_PATH"
+          cp "$APK_PATH" "out/app-release-${{ inputs.job_id }}.apk"
+
+          ls -lh out/
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ inputs.tag }}
-          path: output/*.apk
-          retention-days: 1
+          name: apk-${{ inputs.job_id }}
+          path: out/*.apk
+          retention-days: 7
+          compression-level: 0
           if-no-files-found: error
